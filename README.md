@@ -16,7 +16,7 @@ We have also created typescript angular and react libs facilitating rapid develo
 
 The library and corresponding app platform also ensure backwards compatibility to legacy 1.X versions of CUSS.
 
-- Typescript libs for [Angular](https://github.com/elevationsoftware/cuss2-angular) and [React](https://github.com/elevationsoftware/cuss2-react)
+- Typescript libs for [Angular](https://github.com/elevationsoftware/cuss2-docs/blob/master/angular.md) and [React](https://github.com/elevationsoftware/cuss2-docs/blob/master/react.md)
 
 
 ## The Sandbox
