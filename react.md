@@ -6,6 +6,7 @@ The library and corresponding app platform also ensure backwards compatibility t
 
 You can have ***CUSS 2.0 NOW*** and run a modern browser entirely without plugins or Java.  Finally, your Information Security department will be able to sign off on your CUSS applications.
 
+For more details visit [Documentation](https://elevationsoftware.github.io/cuss2-react/)
 
 
 ## Installation
