@@ -2,15 +2,15 @@
 
 ## About Elevated CUSS Library
 
-Interact with a CUSS 2.0 Restful API using a simple interface leveraging the asyncronicity of event driven architectures. By using the Elevated CUSS library you will get:
+Interact with a CUSS 2 API using a simple interface leveraging the asyncronicity of event driven architectures. By using the Elevated CUSS library you will get:
 
   - Simple device interfaces
   - Subscribable events for all CUSS states and device status
   
 
-CUSS [(Common Use Self-Service)](https://en.wikipedia.org/wiki/Common-use_self-service) is a modern Typescript library facilitating application development of Self-Service check-in apps, self-tagging apps and self bag-drop apps.
+CUSS [(Common Use Self-Service)](https://www.iata.org/en/programs/passenger/common-use/#tab-2) is a modern Typescript library facilitating application development of Self-Service check-in apps, self-tagging apps and self bag-drop apps.
 
-You can have CUSS 2.0 NOW and run a modern browser entirely without plugins or Java. Finally, your Information Security department will be able to sign off on your CUSS applications.  
+You can have CUSS 2 NOW and run a modern browser entirely without plugins or Java. Finally, your Information Security department will be able to sign off on your CUSS applications.  
 
 We have also created typescript angular and react libs facilitating rapid development of CUSS applications.  
 
@@ -204,3 +204,28 @@ ___
 | Headset             | A component that provides audio feedback.         |
 | Illumination        | A component that controls illumination.           |
 | Keypad              | A component that provides keypad input.           |
+
+#### Card Reader
+
+Besides inheriting from all the Media Input methods, the library provides an automatic way to setup a card reader component to read ISO track data without truncation. This feature is only available on Platforms data provide a card reader component interface on CUSS 2 Platforms. The magtripe capabilities are officcially removed from CUSS 2 specification.
+
+```ts
+const cuss2 = await Cuss2.connect(cuss2URL, clientId, clientSecret);
+
+// query component
+ const res: PlatformData = await cuss2?.cardReader.query();
+
+ // validate component state
+ if (res.meta.componentState !== ComponentState.READY) {
+    console.log('Component is not ready')
+ } else {
+  // Enable component for ISO track data, for 10 secs then automatically disable the device
+  await cuss2.cardReader.readPayment(5000);
+
+  // Subscribe to MEDIA_PRESENT
+  cuss2.cardReader.data.asObservable().subscribe((data: DataRecordList) => {
+    console.log(`card Reader Data ${data}`);
+  });
+ }
+
+```

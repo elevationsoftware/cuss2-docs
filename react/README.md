@@ -1,6 +1,6 @@
 # [CUSS React](https://www.blndspt.com/cuss-2-0/) &middot; [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/facebook/react/blob/master/LICENSE) [![npm version](https://img.shields.io/npm/v/react.svg?style=flat)](https://www.npmjs.com/package/react)
 
-***[CUSS (Common Use Self-Service)](https://en.wikipedia.org/wiki/Common-use_self-service) React*** is a modern [Typescript](https://en.wikipedia.org/wiki/TypeScript) library facilitating rapid application development of Self-Service check-in apps, self-tagging apps and self bag-drop apps using React's common principles.
+***[CUSS (Common Use Self-Service)](https://www.iata.org/en/programs/passenger/common-use/#tab-2) React*** is a modern [Typescript](https://en.wikipedia.org/wiki/TypeScript) library facilitating rapid application development of Self-Service check-in apps, self-tagging apps and self bag-drop apps using React's common principles.
 
 The library and corresponding app platform also ensure backwards compatibility to legacy 1.X versions of CUSS.
 
