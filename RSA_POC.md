@@ -25,8 +25,8 @@ This section describes the RSA-OAEP public-key encryption feature for securing s
 ```
 Application State Changes:
 ┌──────────────────────────────────────────────────────────────┐
-│ ACTIVE → AVAILABLE/STOPPED     Platform Action: DELETE KEYS  │
-│ AVAILABLE/STOPPED → ACTIVE     App Action: SEND NEW KEY      │
+│ ACTIVE → AVAILABLE/UNAVAILABLE     Platform Action: DELETE KEYS  │
+│ AVAILABLE → ACTIVE     App Action: SEND NEW KEY      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
