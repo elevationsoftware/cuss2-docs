@@ -16,7 +16,7 @@ This section describes the RSA-OAEP public-key encryption feature for securing s
 **IMPORTANT:** Public keys are **session-scoped only** and must be provided each time the application becomes ACTIVE:
 
 - **Keys are NOT persisted** across application state changes
-- When application transitions to AVAILABLE, STOPPED, or any non-ACTIVE state, the platform **discards all public keys**
+- When application transitions to AVAILABLE, UNAVAILABLE, STOPPED, or any non-ACTIVE state, the platform **discards all public keys**
 - Applications **MUST** call `peripherals_setup` with the public key **every time** they transition to ACTIVE state
 - This ensures complete security isolation between passenger sessions
 
@@ -24,10 +24,10 @@ This section describes the RSA-OAEP public-key encryption feature for securing s
 
 ```
 Application State Changes:
-┌──────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────────┐
 │ ACTIVE → AVAILABLE/UNAVAILABLE     Platform Action: DELETE KEYS  │
-│ AVAILABLE → ACTIVE     App Action: SEND NEW KEY      │
-└──────────────────────────────────────────────────────────────┘
+│ AVAILABLE → ACTIVE     App Action: SEND NEW KEY                  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Conceptual Overview
