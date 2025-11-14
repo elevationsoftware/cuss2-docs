@@ -8,43 +8,64 @@ This section describes the RSA-OAEP public-key encryption feature for securing s
 - End-to-end encryption of sensitive cardholder data
 - Platform never accesses or stores private keys
 - Compliant with PCI-DSS requirements
-- Zero additional key management burden on platforms
+- Zero key persistence—keys cleared when application becomes inactive
 - Application controls complete security lifecycle
+
+## Session-Based Key Management
+
+**IMPORTANT:** Public keys are **session-scoped only** and must be provided each time the application becomes ACTIVE:
+
+- **Keys are NOT persisted** across application state changes
+- When application transitions to AVAILABLE, STOPPED, or any non-ACTIVE state, the platform **discards all public keys**
+- Applications **MUST** call `peripherals_setup` with the public key **every time** they transition to ACTIVE state
+- This ensures complete security isolation between passenger sessions
+
+### State Transition Key Management
+
+```
+Application State Changes:
+┌──────────────────────────────────────────────────────────────┐
+│ ACTIVE → AVAILABLE/STOPPED     Platform Action: DELETE KEYS  │
+│ AVAILABLE/STOPPED → ACTIVE     App Action: SEND NEW KEY      │
+└──────────────────────────────────────────────────────────────┘
+```
 
 ## Conceptual Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    RSA-OAEP Encryption Flow                         │
+│             RSA-OAEP Encryption Flow (Per Session)                  │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────┐                                    ┌──────────────┐
 │ Application │                                    │   Platform   │
 └──────┬──────┘                                    └──────┬───────┘
        │                                                  │
-       │ 1. Generate RSA Key Pair                         │
+       │ [App becomes ACTIVE]                             │
+       │                                                  │
+       │ 1. Generate NEW RSA Key Pair                     │
        │    (2048-bit or 4096-bit)                        │
        │                                                  │
        │ 2. peripherals_setup                             │
        │    + Public Key (DS_TYPES_RSA_PUBLIC_KEY)        │
        ├─────────────────────────────────────────────────>│
-       │                                                  │ Store public key
-       │ 3. ACK_OK                                        │ for component
+       │                                                  │ Store key
+       │ 3. ACK_OK                                        │ (session only)
        │<─────────────────────────────────────────────────┤
        │                                                  │
        │ 4. peripherals_userpresent_enable                │
        ├─────────────────────────────────────────────────>│
        │                                                  │
        │                          [User swipes card]      │
-       │                                                  │ Read mag stripe
-       │                                                  │ Encrypt with
-       │ 5. SOLICITED Event                               │ RSA-OAEP
-       │    DATA_PRESENT                                  │
-       │    Encrypted data in dataRecords                 │
+       │                                                  │ Read & encrypt
+       │ 5. DATA_PRESENT Event                            │ with stored key
+       │    (Encrypted data)                              │
        │<─────────────────────────────────────────────────┤
        │                                                  │
        │ 6. Decrypt with private key                      │
-       │    Process payment data                          │
+       │                                                  │
+       │ [Transaction complete - App goes AVAILABLE]      │
+       │                                                  │ DELETE all keys
        │                                                  │
 ```
 
@@ -52,27 +73,35 @@ This section describes the RSA-OAEP public-key encryption feature for securing s
 
 ### Step 1: Application Generates RSA Key Pair
 
+**When:** Every time the application becomes ACTIVE (including after initial activation, transfers, or any return to ACTIVE state)
+
+**Why:** Keys are never persisted, ensuring complete session isolation and security
+
 The application generates an RSA key pair before sending the setup directive. The recommended key size is **2048 bits** for a balance of security and performance, though **4096 bits** may be used for enhanced security.
 
 **Key Generation Example (JavaScript/Node.js):**
 ```javascript
 const crypto = require('crypto');
 
-// Generate RSA key pair
-const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-  modulusLength: 2048,
-  publicKeyEncoding: {
-    type: 'spki',
-    format: 'pem'
-  },
-  privateKeyEncoding: {
-    type: 'pkcs8',
-    format: 'pem'
-  }
-});
+// Generate FRESH RSA key pair for this session
+function generateSessionKeyPair() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: {
+      type: 'spki',
+      format: 'pem'
+    },
+    privateKeyEncoding: {
+      type: 'pkcs8',
+      format: 'pem'
+    }
+  });
 
-// Store private key securely (never transmit!)
-// Public key will be sent to platform
+  console.log('✓ Generated new session key pair');
+  
+  // Store private key securely for THIS SESSION ONLY
+  return { publicKey, privateKey };
+}
 ```
 
 **Key Generation Example (Python):**
@@ -81,26 +110,31 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
-# Generate RSA key pair
-private_key = rsa.generate_private_key(
-    public_exponent=65537,
-    key_size=2048,
-    backend=default_backend()
-)
+def generate_session_key_pair():
+    """Generate fresh RSA key pair for current session"""
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+        backend=default_backend()
+    )
 
-public_key = private_key.public_key()
+    public_key = private_key.public_key()
 
-# Serialize public key to PEM format
-public_key_pem = public_key.public_key_bytes(
-    encoding=serialization.Encoding.PEM,
-    format=serialization.PublicFormat.SubjectPublicKeyInfo
-)
+    # Serialize public key to PEM format
+    public_key_pem = public_key.public_key_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
 
-# Store private_key securely (never transmit!)
-# public_key_pem will be sent to platform
+    print('✓ Generated new session key pair')
+    
+    # Store private_key for THIS SESSION ONLY
+    return private_key, public_key_pem
 ```
 
 ### Step 2: Setup Directive with Public Key
+
+**CRITICAL:** This must be called **every time** the application becomes ACTIVE, before any encrypted operations.
 
 The application sends the public key to the platform using the `peripherals_setup` directive with a `dataRecords` payload containing the public key encoded in Base64.
 
@@ -131,22 +165,27 @@ The application sends the public key to the platform using the `peripherals_setu
 
 | Field | Description |
 |-------|-------------|
-| `dsTypes` | Must include `DS_TYPES_RSA_PUBLIC_KEY` to indicate this is an RSA public key |
+| `dsTypes` | Must include `DS_TYPES_RSA_PUBLIC_KEY` to indicate this is an RSA public key. May also include data type for operations (e.g., `DS_TYPES_PAYMENT_ISO`) |
 | `data` | Base64-encoded PEM format public key |
 | `encoding` | Must be `BASE64` |
 | `dataStatus` | Should be `DS_OK` for valid key data |
 
 ### Step 3: Platform Acknowledgment
 
-The platform validates and stores the public key, responding with `ACK_OK`:
+The platform validates and stores the public key **for the current session only**, responding with `ACK_OK`:
 
 ```json
 {
   "ackCode": "ACK_OK",
   "requestID": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-  "description": "Public key stored successfully for component 42"
+  "description": "Public key stored for current session"
 }
 ```
+
+**Platform Behavior:**
+- Validates public key format and encoding
+- Stores key in memory associated with component and current application session
+- **Automatically discards key** when application transitions away from ACTIVE state
 
 **Possible Error Responses:**
 
@@ -154,6 +193,7 @@ The platform validates and stores the public key, responding with `ACK_OK`:
 |----------|--------|
 | `ACK_PARAMETER` | Invalid public key format, encoding error, or missing data |
 | `ACK_ERROR` | Component doesn't support encryption or internal platform error |
+| `WRONG_APPLICATION_STATE` | Application not in ACTIVE state |
 
 ### Step 4: Enable Component for Use
 
@@ -195,9 +235,8 @@ When the platform reads sensitive data (e.g., magnetic stripe), it encrypts the 
       "eventMode": "SOLICITED",
       "eventType": "PRIVATE",
       "eventCategory": "NORMAL"
-    },
-    "platformDirective": ""
- },
+    }
+  },
   "payload": {
     "dataRecords": [
       {
@@ -225,7 +264,7 @@ When the platform reads sensitive data (e.g., magnetic stripe), it encrypts the 
 
 ### Step 6: Application Decrypts Data
 
-The application uses its private key to decrypt the received data:
+The application uses its private key (from the current session) to decrypt the received data:
 
 **Decryption Example (JavaScript/Node.js):**
 ```javascript
@@ -248,11 +287,11 @@ function decryptMagStripeData(encryptedDataB64, privateKeyPem) {
     
     // Convert to string
     const magStripeData = decryptedBuffer.toString('utf8');
-    console.log('Decrypted mag stripe:', magStripeData);
+    console.log('✓ Decrypted mag stripe data');
     
     return magStripeData;
   } catch (error) {
-    console.error('Decryption failed:', error);
+    console.error('✗ Decryption failed:', error);
     throw error;
   }
 }
@@ -270,15 +309,8 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
 
-def decrypt_mag_stripe_data(encrypted_data_b64, private_key_pem):
+def decrypt_mag_stripe_data(encrypted_data_b64, private_key):
     try:
-        # Load private key
-        private_key = serialization.load_pem_private_key(
-            private_key_pem.encode('utf-8'),
-            password=None,
-            backend=default_backend()
-        )
-        
         # Decode from Base64
         encrypted_data = base64.b64decode(encrypted_data_b64)
         
@@ -294,40 +326,177 @@ def decrypt_mag_stripe_data(encrypted_data_b64, private_key_pem):
         
         # Convert to string
         mag_stripe_data = decrypted_data.decode('utf-8')
-        print(f"Decrypted mag stripe: {mag_stripe_data}")
+        print(f"✓ Decrypted mag stripe data")
         
         return mag_stripe_data
     except Exception as e:
-        print(f"Decryption failed: {e}")
+        print(f"✗ Decryption failed: {e}")
         raise
 
 # Usage
 encrypted_data = "kQp8xNZ2L5vHtJ9mW3rF0eK7cY1bX4dP6sA8nM9gV2lR5oU7iT0qE3wZ..."
-decrypted_data = decrypt_mag_stripe_data(encrypted_data, private_key_pem)
+decrypted_data = decrypt_mag_stripe_data(encrypted_data, private_key)
 # Result: "%B4111111111111111^DOE/JOHN^2512101123456789?"
+```
+
+## Session Lifecycle and Key Management
+
+### Complete Session Flow
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    Session Lifecycle                           │
+└────────────────────────────────────────────────────────────────┘
+
+Application                                Platform
+───────────                                ────────
+
+[State: AVAILABLE]                         [No keys stored]
+       │
+       │ State change to ACTIVE
+       ├──────────────────────────────────>
+       │                                   
+[State: ACTIVE]                            
+       │
+       │ Generate NEW key pair
+       │
+       │ peripherals_setup + public key
+       ├──────────────────────────────────> Store key (session)
+       │
+       │ ACK_OK
+       │<──────────────────────────────────
+       │
+       │ [Use encrypted operations]
+       │ <────────────────────────────────> [Encrypt with key]
+       │
+       │ Transaction complete
+       │ State change to AVAILABLE
+       ├──────────────────────────────────>
+       │                                    DELETE all keys
+[State: AVAILABLE]                         [No keys stored]
+       │
+       │ [Next passenger]
+       │ State change to ACTIVE
+       ├──────────────────────────────────>
+       │
+[State: ACTIVE]
+       │
+       │ Generate NEW key pair
+       │ peripherals_setup + NEW public key
+       ├──────────────────────────────────> Store NEW key
+       │                                    (new session)
+```
+
+### Application State Handler Example
+
+```javascript
+class SessionKeyManager {
+  constructor() {
+    this.currentKeyPair = null;
+    this.currentState = 'AVAILABLE';
+  }
+  
+  async handleStateChange(newState) {
+    console.log(`State transition: ${this.currentState} → ${newState}`);
+    
+    if (newState === 'ACTIVE') {
+      // Generate fresh keys for new session
+      console.log('✓ Application becoming ACTIVE');
+      this.currentKeyPair = this.generateSessionKeyPair();
+      
+      // Setup ALL components that need encryption
+      await this.setupAllEncryptedComponents();
+      
+      console.log('✓ Ready for encrypted operations');
+      
+    } else if (this.currentState === 'ACTIVE' && newState !== 'ACTIVE') {
+      // Leaving ACTIVE state - clear keys
+      console.log('✓ Application leaving ACTIVE state');
+      this.currentKeyPair = null; // Discard keys
+      console.log('✓ Session keys cleared');
+    }
+    
+    this.currentState = newState;
+  }
+  
+  generateSessionKeyPair() {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+    });
+    
+    console.log('✓ Generated new session key pair');
+    return { publicKey, privateKey };
+  }
+  
+  async setupAllEncryptedComponents() {
+    // Setup each component that needs encryption
+    const encryptedComponents = [42, 43]; // MSR readers
+    
+    for (const componentId of encryptedComponents) {
+      await this.setupEncryptedComponent(componentId);
+    }
+  }
+  
+  async setupEncryptedComponent(componentId) {
+    const request = {
+      meta: {
+        deviceID: this.deviceID,
+        requestID: crypto.randomUUID(),
+        oauthToken: this.oauthToken,
+        directive: "peripherals_setup",
+        componentID: componentId
+      },
+      payload: {
+        dataRecords: [{
+          dataStatus: "DS_OK",
+          dsTypes: ["DS_TYPES_RSA_PUBLIC_KEY"],
+          data: Buffer.from(this.currentKeyPair.publicKey).toString('base64'),
+          encoding: "BASE64"
+        }]
+      }
+    };
+    
+    this.websocket.send(JSON.stringify(request));
+    console.log(`✓ Sent public key for component ${componentId}`);
+  }
+}
+
+// Usage
+const keyManager = new SessionKeyManager();
+
+// When platform activates application
+await keyManager.handleStateChange('ACTIVE');
+
+// When transaction complete
+await keyManager.handleStateChange('AVAILABLE');
 ```
 
 ## Data Flow Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                     Encryption Data Flow                         │
+│              Per-Session Encryption Data Flow                    │
 └──────────────────────────────────────────────────────────────────┘
 
 Application Side                    Platform Side
 ─────────────────                   ──────────────
 
-┌─────────────┐
+[ACTIVE State]
+       │
+┌──────┴──────┐
 │  Generate   │
-│  Key Pair   │
+│  NEW Keys   │
+│ (per session)│
 └──────┬──────┘
        │
        │ Public Key (PEM)
        ↓
 ┌─────────────┐                    ┌──────────────┐
 │   Base64    │──────────────────→ │    Store     │
-│   Encode    │   peripherals_     │  Public Key  │
-└─────────────┘      setup         │ (component)  │
+│   Encode    │   peripherals_     │  (session    │
+└─────────────┘      setup         │   memory)    │
                                    └──────┬───────┘
                                           │
                          [Card Swipe]     │
@@ -347,35 +516,69 @@ Application Side                    Platform Side
 ┌─────────────┐                           │
 │   Decrypt   │ ←─────────────────────────┘
 │  with       │    DATA_PRESENT
-│ Private Key │    (Base64)
+│Session Key  │    (Base64)
 └──────┬──────┘
        │
        ↓
 ┌─────────────┐
 │   Process   │
-│  Plain Text │
-│   Payment   │
+│  Payment    │
 └─────────────┘
+
+[AVAILABLE State]
+       │
+       ↓
+┌─────────────┐                    ┌──────────────┐
+│   Discard   │                    │    DELETE    │
+│   Private   │                    │   Public     │
+│    Key      │                    │    Key       │
+└─────────────┘                    └──────────────┘
 ```
 
 ## Security Considerations
 
+### Session-Based Key Security
+
+1. **No Key Persistence:**
+   - Platform NEVER stores keys to disk or persistent storage
+   - Keys exist only in memory for current application session
+   - Automatic cleanup on state transition ensures zero key leakage
+
+2. **Fresh Keys Per Session:**
+   - New key pair generated each time application becomes ACTIVE
+   - No key reuse across passenger sessions
+   - Each transaction isolated with unique encryption
+
+3. **Private Key Protection:**
+   - Application stores private keys only for current session
+   - Clear private key from memory when transitioning to non-ACTIVE state
+   - Never log, transmit, or persist private keys
+
 ### Key Management Best Practices
 
-1. **Private Key Storage:**
-   - Store private keys in secure, encrypted storage
-   - Never transmit private keys over the network
+1. **Private Key Storage (Session Only):**
+   - Store in secure memory during ACTIVE state only
+   - Overwrite/zero memory when clearing keys
+   - Never write private keys to disk or logs
    - Use hardware security modules (HSMs) when available
-   - Implement proper access controls
 
-2. **Key Rotation:**
-   - Implement periodic key rotation policies
-   - Generate new key pairs for each session or daily
-   - Retire old keys securely after rotation
-
-3. **Key Size:**
+2. **Key Size:**
    - Minimum: 2048 bits (recommended for most deployments)
    - Enhanced security: 4096 bits (higher security, slightly slower)
+
+3. **State Transition Handling:**
+   ```javascript
+   // CRITICAL: Clear keys on state change
+   onStateChange(newState) {
+     if (newState !== 'ACTIVE') {
+       // Overwrite sensitive memory
+       if (this.privateKey) {
+         this.privateKey = null;
+       }
+       this.currentKeyPair = null;
+     }
+   }
+   ```
 
 ### Encryption Details
 
@@ -390,16 +593,19 @@ Application Side                    Platform Side
 - 4096-bit key: Maximum plaintext = 470 bytes (4096/8 - 42)
 
 **Performance:**
-- Encryption overhead: ~2-10ms per operation
+- Key generation: ~100-300ms (2048-bit)
+- Encryption: ~2-10ms per operation
 - Negligible impact for magnetic stripe operations
 
 ### PCI-DSS Compliance
 
-This encryption approach supports PCI-DSS compliance by:
+This session-based encryption approach supports PCI-DSS compliance by:
 - Encrypting cardholder data in transit
 - Preventing platform storage of unencrypted cardholder data
 - Ensuring only the application can decrypt sensitive data
 - Meeting "strong cryptography" requirements (RSA-2048+)
+- Zero key persistence eliminates long-term key storage risks
+- Session isolation prevents cross-contamination
 
 ## Error Handling
 
@@ -408,16 +614,24 @@ This encryption approach supports PCI-DSS compliance by:
 | Error Scenario | Cause | Solution |
 |----------------|-------|----------|
 | ACK_PARAMETER on setup | Invalid public key format | Verify PEM format and Base64 encoding |
-| Decryption fails | Wrong private key or corrupted data | Verify key pair matches, check data integrity |
-| DATA_PRESENT without encryption | Platform doesn't support feature | Check component characteristics for encryption capability |
+| Decryption fails | Wrong private key or corrupted data | Verify using correct session key pair |
+| WRONG_APPLICATION_STATE | Setup called when not ACTIVE | Ensure application is ACTIVE before setup |
+| DATA_PRESENT without encryption | No public key configured | Call peripherals_setup after becoming ACTIVE |
 | Key size error | Key too small (<2048 bits) | Generate larger key pair (≥2048 bits) |
 
-### Example Error Handling
+### State-Aware Error Handling
 
 ```javascript
-// Setup with error handling
-async function setupEncryptedComponent(componentId, publicKey) {
+async function setupEncryptedComponent(componentId, publicKey, currentState) {
   try {
+    // Verify state before attempting setup
+    if (currentState !== 'ACTIVE') {
+      throw new Error(
+        `Cannot setup encryption in ${currentState} state. ` +
+        `Application must be ACTIVE.`
+      );
+    }
+    
     const setupRequest = {
       meta: {
         deviceID: this.deviceID,
@@ -445,10 +659,9 @@ async function setupEncryptedComponent(componentId, publicKey) {
       throw new Error(`Setup failed: ${ack.description}`);
     }
     
-    console.log("✓ Encryption setup successful");
+    console.log("✓ Encryption setup successful for session");
   } catch (error) {
     console.error("✗ Encryption setup failed:", error);
-    // Fallback: Continue without encryption if acceptable
     throw error;
   }
 }
@@ -476,7 +689,7 @@ function supportsEncryption(componentCharacteristics) {
 const component = getComponentById(42);
 if (supportsEncryption(component.componentCharacteristics[0])) {
   console.log("✓ Component supports RSA encryption");
-  await setupEncryptedComponent(42, publicKey);
+  // Will setup when application becomes ACTIVE
 } else {
   console.log("✗ Component does not support encryption");
   // Use standard unencrypted flow
@@ -491,21 +704,65 @@ class SecurePaymentFlow {
     this.deviceID = deviceID;
     this.oauthToken = oauthToken;
     this.websocket = websocket;
-    this.keyPair = null;
+    this.sessionKeyPair = null;
+    this.currentState = 'AVAILABLE';
   }
   
-  // 1. Generate key pair
+  // Handle application state changes
+  async onApplicationStateChange(newState) {
+    console.log(`State: ${this.currentState} → ${newState}`);
+    
+    if (newState === 'ACTIVE') {
+      await this.initializeActiveSession();
+    } else if (this.currentState === 'ACTIVE') {
+      this.cleanupSession();
+    }
+    
+    this.currentState = newState;
+  }
+  
+  // Initialize new ACTIVE session
+  async initializeActiveSession() {
+    console.log('═══ New Session Started ═══');
+    
+    // 1. Generate fresh keys
+    this.sessionKeyPair = this.generateKeys();
+    
+    // 2. Setup all encrypted components
+    await this.setupEncryption(42); // MSR component
+    
+    // 3. Ready for operations
+    console.log('✓ Session initialized with encryption');
+  }
+  
+  // Clean up when leaving ACTIVE
+  cleanupSession() {
+    console.log('═══ Session Ended ═══');
+    
+    // Clear sensitive key material
+    this.sessionKeyPair = null;
+    
+    console.log('✓ Session keys cleared');
+  }
+  
+  // Generate key pair for current session
   generateKeys() {
-    this.keyPair = crypto.generateKeyPairSync('rsa', {
+    const keyPair = crypto.generateKeyPairSync('rsa', {
       modulusLength: 2048,
       publicKeyEncoding: { type: 'spki', format: 'pem' },
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
     });
-    console.log("✓ Generated RSA key pair");
+    
+    console.log("✓ Generated session RSA key pair");
+    return keyPair;
   }
   
-  // 2. Setup with public key
+  // Setup encryption for component
   async setupEncryption(componentId) {
+    if (this.currentState !== 'ACTIVE') {
+      throw new Error('Cannot setup encryption: not in ACTIVE state');
+    }
+    
     const request = {
       meta: {
         deviceID: this.deviceID,
@@ -518,17 +775,17 @@ class SecurePaymentFlow {
         dataRecords: [{
           dataStatus: "DS_OK",
           dsTypes: ["DS_TYPES_RSA_PUBLIC_KEY"],
-          data: Buffer.from(this.keyPair.publicKey).toString('base64'),
+          data: Buffer.from(this.sessionKeyPair.publicKey).toString('base64'),
           encoding: "BASE64"
         }]
       }
     };
     
     this.websocket.send(JSON.stringify(request));
-    console.log("✓ Sent public key to platform");
+    console.log(`✓ Configured encryption for component ${componentId}`);
   }
   
-  // 3. Enable component
+  // Enable reader for card swipe
   async enableReader(componentId) {
     const request = {
       meta: {
@@ -545,50 +802,66 @@ class SecurePaymentFlow {
     console.log("✓ Enabled mag stripe reader");
   }
   
-  // 4. Handle encrypted response
+  // Handle encrypted data from platform
   handleDataPresent(platformData) {
     const record = platformData.payload.dataRecords[0];
     
-    if (record.dsTypes.includes("DS_TYPES_ENCRYPTED_DATA")) {
-      console.log("✓ Received encrypted data");
-      
-      // Decrypt
-      const encryptedBuffer = Buffer.from(record.data, 'base64');
-      const decryptedBuffer = crypto.privateDecrypt(
-        {
-          key: this.keyPair.privateKey,
-          padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-          oaepHash: 'sha256'
-        },
-        encryptedBuffer
-      );
-      
-      const magStripeData = decryptedBuffer.toString('utf8');
-      console.log("✓ Decrypted payment data");
-      
-      return this.processPayment(magStripeData);
+    if (!record.dsTypes.includes("DS_TYPES_ENCRYPTED_DATA")) {
+      console.warn("⚠ Received unencrypted data");
+      return null;
     }
+    
+    console.log("✓ Received encrypted payment data");
+    
+    // Decrypt with current session key
+    const encryptedBuffer = Buffer.from(record.data, 'base64');
+    const decryptedBuffer = crypto.privateDecrypt(
+      {
+        key: this.sessionKeyPair.privateKey,
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: 'sha256'
+      },
+      encryptedBuffer
+    );
+    
+    const magStripeData = decryptedBuffer.toString('utf8');
+    console.log("✓ Decrypted payment data");
+    
+    return this.processPayment(magStripeData);
   }
   
   processPayment(magStripeData) {
-    // Process payment with decrypted data
     console.log("✓ Processing payment...");
     // ... payment processing logic ...
+    return { success: true };
   }
 }
 
-// Usage
+// Application lifecycle usage
 const flow = new SecurePaymentFlow(deviceID, token, websocket);
-flow.generateKeys();
-await flow.setupEncryption(42);
+
+// Platform activates application
+await flow.onApplicationStateChange('ACTIVE');
+// Keys generated, encryption setup automatically
+
+// Begin transaction
 await flow.enableReader(42);
 
+// Handle incoming data
 websocket.onmessage = (event) => {
   const data = JSON.parse(event.data);
   if (data.meta?.messageCode === "DATA_PRESENT") {
     flow.handleDataPresent(data);
   }
 };
+
+// Transaction complete - app goes AVAILABLE
+await flow.onApplicationStateChange('AVAILABLE');
+// Keys automatically cleared
+
+// Next passenger - app becomes ACTIVE again
+await flow.onApplicationStateChange('ACTIVE');
+// NEW keys generated, NEW encryption setup
 ```
 
 ## Testing and Validation
@@ -596,39 +869,61 @@ websocket.onmessage = (event) => {
 ### Unit Test Example
 
 ```javascript
-describe('RSA-OAEP Encryption', () => {
-  it('should encrypt and decrypt mag stripe data', () => {
-    // Generate test key pair
-    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+describe('Session-Based RSA-OAEP Encryption', () => {
+  it('should use different keys for each session', () => {
+    // Session 1
+    const keyPair1 = crypto.generateKeyPairSync('rsa', {
       modulusLength: 2048,
       publicKeyEncoding: { type: 'spki', format: 'pem' },
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
     });
     
-    // Test data
-    const originalData = "%B4111111111111111^DOE/JOHN^2512101?";
+    // Session 2 (new passenger)
+    const keyPair2 = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+    });
     
-    // Encrypt (simulating platform)
-    const encrypted = crypto.publicEncrypt(
+    // Keys must be different
+    expect(keyPair1.publicKey).not.toBe(keyPair2.publicKey);
+    expect(keyPair1.privateKey).not.toBe(keyPair2.privateKey);
+    
+    // Each session's key can only decrypt its own data
+    const testData = "%B4111111111111111^DOE/JOHN^2512101?";
+    
+    const encrypted1 = crypto.publicEncrypt(
       {
-        key: publicKey,
+        key: keyPair1.publicKey,
         padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
         oaepHash: 'sha256'
       },
-      Buffer.from(originalData)
+      Buffer.from(testData)
     );
     
-    // Decrypt (simulating application)
-    const decrypted = crypto.privateDecrypt(
+    // Session 2 key cannot decrypt Session 1 data
+    expect(() => {
+      crypto.privateDecrypt(
+        {
+          key: keyPair2.privateKey,
+          padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: 'sha256'
+        },
+        encrypted1
+      );
+    }).toThrow();
+    
+    // Session 1 key can decrypt Session 1 data
+    const decrypted1 = crypto.privateDecrypt(
       {
-        key: privateKey,
+        key: keyPair1.privateKey,
         padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
         oaepHash: 'sha256'
       },
-      encrypted
+      encrypted1
     );
     
-    expect(decrypted.toString('utf8')).toBe(originalData);
+    expect(decrypted1.toString('utf8')).toBe(testData);
   });
 });
 ```
@@ -645,18 +940,31 @@ This encryption feature is **optional and backward compatible**:
 ### Graceful Degradation
 
 ```javascript
-async function readMagStripe(componentId) {
-  const component = getComponentById(componentId);
-  
-  if (supportsEncryption(component)) {
-    // Use encrypted flow
-    await setupEncryptedComponent(componentId, publicKey);
-  } else {
-    // Fall back to standard flow
-    console.log("Using standard unencrypted flow");
+async function initializeSession(state) {
+  if (state === 'ACTIVE') {
+    const component = getComponentById(42);
+    
+    if (supportsEncryption(component)) {
+      // Use encrypted flow with session keys
+      const keyPair = generateSessionKeyPair();
+      await setupEncryptedComponent(42, keyPair.publicKey);
+      console.log("✓ Using encrypted session");
+    } else {
+      // Fall back to standard flow
+      console.log("ℹ Using standard unencrypted flow");
+    }
+    
+    await enableComponent(42);
   }
-  
-  await enableComponent(componentId);
 }
 ```
 
+## Summary: Key Lifecycle Rules
+
+1. **Generate keys** when application becomes ACTIVE
+2. **Send public key** via `peripherals_setup` for each encrypted component
+3. **Use encryption** during ACTIVE session
+4. **Clear keys** when transitioning away from ACTIVE
+5. **Repeat** for next session with NEW keys
+
+This session-based approach ensures maximum security with zero key management burden on the platform.
